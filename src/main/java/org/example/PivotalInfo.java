@@ -4,11 +4,14 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 public class PivotalInfo {
 
@@ -17,65 +20,60 @@ public class PivotalInfo {
     private final String contributors_url = "contributors_url";
 
     public void generateInfo () {
-        CompletableFuture<Map<String, String>> req1 = get("https://api.github.com/users/pivotal")
-        .thenApply(f -> findInfo(f.body()));
-        CompletableFuture<Map<String, String>> req2 = get("https://api.github.com/users/pivotal/repos")
-                .thenApply(f -> findUrl(f.body()))
-                .thenApply(this::get)
-                .thenApply(c -> findContributors(c.join().body()));
-        Map<String, String> result = req1.thenCombine(req2, (m1, m2) -> {
-            Map<String, String> hashMap = new HashMap<>();
-            hashMap.putAll(m1);
-            hashMap.putAll(m2);
-            return hashMap;
+        String userName = "pivotal";
+        long timer = System.currentTimeMillis();
+        CompletableFuture<Map<String, String>> req1 = get("https://api.github.com/users/" + userName)
+        .thenApply(this::findInfo);
+
+        CompletableFuture<Map<String, String>> req2 = get("https://api.github.com/users/" + userName + "/repos")
+                .thenApply(json -> findValueInJson(json, contributors_url).stream()
+                        .limit(5)
+                        .collect(Collectors.toList()))
+                .thenApply(contribUrls -> contribUrls.stream()
+                        .collect(Collectors.toMap(this::formatKey, v -> get(v)
+                                .thenApply(json -> String.join(", ", findValueInJson(json, "login")))
+                                .join())));
+
+        req1.thenCombine(req2, (m1, m2) -> {
+            System.out.println(m1);
+            System.out.println(m2);
+            return null;
         }).join();
+        System.out.println("Total time " + (System.currentTimeMillis() - timer) + "ms");
+    }
 
-        System.out.println(name + "=" + result.get(name));
-        result.remove(name);
-        System.out.println(email + "=" + result.get(email));
-        result.remove(email);
-        for (Map.Entry<String,String> entry : result.entrySet()) {
-            System.out.println(entry);
+    private String formatKey(String url) {
+        Pattern pattern = Pattern.compile("https://.+/.+/.+/([\\w]+)/");
+        Matcher matcher = pattern.matcher(url);
+        if (matcher.find()) {
+            return "\nContributors for repo \"" + matcher.group(1) + "\" ";
         }
+        return null;
     }
 
-    private HashMap<String, String> findContributors(String json) {
-        HashMap<String, String> info = new HashMap<>();
-        Pattern pattern = Pattern.compile("\"" + "login" + "\":\"([\\w@:/\\.]+)\"");
-        Matcher matcher = pattern.matcher(json);
-        int n = 0;
-        while (matcher.find()) {
-            info.put("Contributor" + n, matcher.group(1));
-            n++;
-        }
-        return info;
-    }
-
-    private String findUrl(String json) {
-        return findValueInJson(json, contributors_url);
-    }
-
-    private CompletableFuture<HttpResponse<String>> get(String uri) {
+    private CompletableFuture<String> get(String uri) {
         HttpClient client = HttpClient.newHttpClient();
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(uri))
                 .build();
-        return client.sendAsync(request, HttpResponse.BodyHandlers.ofString());
+        CompletableFuture<HttpResponse<String>> httpResponseCompletableFuture = client.sendAsync(request, HttpResponse.BodyHandlers.ofString());
+        return httpResponseCompletableFuture.thenApply(HttpResponse::body);
     }
 
     private Map<String, String> findInfo(String json) {
         HashMap<String, String> info = new HashMap<>();
-        info.put(name, findValueInJson(json, name));
-        info.put(email, findValueInJson(json, email));
+        info.put(name, findValueInJson(json, name).get(0));
+        info.put(email, findValueInJson(json, email).get(0));
         return info;
     }
 
-    private String findValueInJson (String json, String name) {
+    private List<String> findValueInJson (String json, String name) {
         Pattern pattern = Pattern.compile("\"" + name + "\":\"([\\w@:/\\.]+)\"");
         Matcher matcher = pattern.matcher(json);
-        if (matcher.find()) {
-            return matcher.group(1);
+        List<String> list = new ArrayList<>();
+        while (matcher.find()) {
+            list.add(matcher.group(1));
         }
-        return null;
+        return list;
     }
 }
